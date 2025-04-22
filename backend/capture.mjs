@@ -8,7 +8,8 @@ import screenshot from 'screenshot-desktop';
 const STORAGE_FILE = './storage.json';
 const IMAGES_FOLDER = './images';
 const OLLAMA_API_URL = 'http://localhost:11434/api/generate';
-const MODEL_NAME = 'gemma3:27b-it-qat';
+const VISION_MODEL_NAME = 'gemma3:27b';
+const CODING_MODEL_NAME = 'qwen2.5-coder:32b';
 const INTERVAL_MS = 30000; // 30 seconds
 
 // Ensure storage paths exist
@@ -38,27 +39,46 @@ async function captureScreenshot() {
   return filename;
 }
 
-// Ask Ollama
-async function askOllama(base64Image) {
-  const response = await fetch('http://localhost:11434/api/generate', {
+// Ask Vision Model for OCR and problem analysis
+async function askVisionModel(base64Image) {
+  const response = await fetch(OLLAMA_API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: MODEL_NAME,
-      prompt: 'IM sending you screenshots of coding problems, your goal is to describe the problem that you are solving, and solve it, so give me the answer to it. Be as structured as possible so the output is easy to read. Its mostly coding challenges so you must solve them, but it might also be react or javascript questions, in this case you must give me the correct answer, in the screen you might see more than one together so maintain a structure answering',
+      model: VISION_MODEL_NAME,
+      prompt: 'Please analyze this screenshot and describe the coding problem or question you see. Focus on extracting the exact problem statement, requirements, and any relevant details. Be precise and structured in your analysis.',
       images: [base64Image],
       stream: false
     })
   });
 
   if (!response.ok) {
-    throw new Error(`Ollama error: ${response.statusText}`);
+    throw new Error(`Vision model error: ${response.statusText}`);
   }
 
   const data = await response.json();
-  return data.response; // <-- note: `response`, not `message.content`
+  return data.response;
 }
 
+// Ask Coding Model to solve the problem
+async function askCodingModel(problemDescription) {
+  const response = await fetch(OLLAMA_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: CODING_MODEL_NAME,
+      prompt: `Based on the following problem description which is in JS / TS or REACT, please provide a complete solution. Include code examples, explanations, and best practices where applicable.  The code must be between \`\`\` and \`\`\` tags.\n\nProblem Description:\n${problemDescription}`,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Coding model error: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data.response;
+}
 
 // Convert image to Base64
 function imageToBase64(filepath) {
@@ -78,14 +98,20 @@ async function mainLoop() {
       const imgPath = path.join(IMAGES_FOLDER, screenshotFile);
       const base64Img = imageToBase64(imgPath);
 
-      const aiResponse = await askOllama(base64Img);
-      console.log(`Ollama response: ${aiResponse}`);
+      // First, use vision model to analyze the problem
+      const problemDescription = await askVisionModel(base64Img);
+      console.log(`Vision model analysis: ${problemDescription}`);
+
+      // Then, use coding model to solve the problem
+      const solution = await askCodingModel(problemDescription);
+      console.log(`Coding model solution: ${solution}`);
 
       const storage = loadStorage();
       storage.push({
         timestamp: Date.now(),
         screenshot: screenshotFile,
-        response: aiResponse
+        problemDescription: problemDescription,
+        solution: solution
       });
       saveStorage(storage);
 
